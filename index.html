@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="PoupeJá">
+<title>PoupeJá AI</title>
+<style>
+:root{--p:#0f766e;--bg:#f3f6f6;--card:#fff;--tx:#0f172a;--mut:#64748b;--red:#dc2626;--grn:#16a34a}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--tx);padding-bottom:calc(72px + env(safe-area-inset-bottom))}
+header{background:var(--p);color:#fff;padding:calc(14px + env(safe-area-inset-top)) 16px 14px;font-weight:700;font-size:20px}
+main{padding:14px;max-width:600px;margin:auto}
+.card{background:var(--card);border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+input,select,button{font:inherit;width:100%;padding:12px;border-radius:10px;border:1px solid #cbd5e1;margin-bottom:8px;background:#fff}
+button{background:var(--p);color:#fff;border:0;font-weight:600;cursor:pointer}
+button.sec{background:#e2e8f0;color:var(--tx)}
+button.danger{background:var(--red)}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#fff;border-top:1px solid #e2e8f0;padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;background:none;color:var(--mut);padding:8px 2px;margin:0;border-radius:0;font-size:11px}
+nav button.on{color:var(--p)}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid #f1f5f9}
+.inc{color:var(--grn)} .exp{color:var(--red)}
+.bar{height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--p)}
+.hide{display:none!important}
+.ad{text-align:center;font-size:12px;color:var(--mut);background:#e2e8f0;border-radius:10px;padding:14px;margin-top:10px}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
+.modal .card{max-width:420px;width:100%}
+.muted{color:var(--mut);font-size:13px}
+.pill{display:inline-block;font-size:12px;padding:3px 8px;border-radius:99px;background:#ccfbf1;color:var(--p)}
+#print-area{display:none}
+@media print{
+  body>*:not(#print-area){display:none!important}
+  #print-area{display:block!important;padding:20px;color:#000;background:#fff}
+}
+</style>
+</head>
+<body>
+<header>PoupeJá AI</header>
+<main>
+  <section id="s-home" class="sec hide"></section>
+  <section id="s-tx" class="sec hide"></section>
+  <section id="s-nota" class="sec hide"></section>
+  <section id="s-rel" class="sec hide"></section>
+  <section id="s-adm" class="sec hide"></section>
+</main>
+<nav id="nav"></nav>
+<div id="modal" class="modal hide"></div>
+<div id="print-area"></div>
+
+<script>
+const KEY = 'poupeja_ai_v1';
+const FREE_LIMIT = 3;                         // leituras de nota por dia no plano grátis
+const ADMIN_EMAIL = 'seu-email@gmail.com';    // troque pelo seu e-mail de administrador
+const PIX_KEY = 'SUA-CHAVE-PIX-AQUI';         // troque pela sua chave PIX
+const CATS = ['Alimentação','Moradia','Transporte','Saúde','Lazer','Compras','Contas','Salário','Outros'];
+
+let db = load();
+let cur = 'home';
+let pending = null;
+
+function load(){
+  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && Array.isArray(s.tx)) return s; } catch(e){}
+  return { user:null, tx:[], usage:{date:'', reads:0} };
+}
+function save(){
+  try { localStorage.setItem(KEY, JSON.stringify(db)); }
+  catch(e){ alert('Não foi possível salvar neste navegador.'); }
+}
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = v => Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+const today = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset()*6e4).toISOString().slice(0,10); };
+const sum = list => list.reduce((s,t) => s + t.amount, 0);
+const isPro = () => !db.user ? false : (db.user.simFree ? false : (db.user.isAdmin || db.user.plan === 'pro'));
+const parseMoney = s => {
+  let v = String(s).trim();
+  if (v.includes(',')) v = v.replace(/\./g,'').replace(',','.');
+  const n = parseFloat(v);
+  return isFinite(n) && n > 0 ? Math.round(n*100)/100 : NaN;
+};
+const dBR = d => d.split('-').reverse().join('/');
+function ensureDay(){ if (db.usage.date !== today()){ db.usage = {date: today(), reads: 0}; save(); } }
+
+/* ---------- Cadastro inicial ---------- */
+function showSetup(){
+  $('#modal').innerHTML = `<div class="card"><h3>Bem-vindo ao PoupeJá AI</h3>
+    <input id="su-name" placeholder="Seu nome">
+    <input id="su-mail" type="email" placeholder="Seu e-mail">
+    <button onclick="doSetup()">Começar</button></div>`;
+  $('#modal').classList.remove('hide');
+}
+function doSetup(){
+  const name = $('#su-name').value.trim(), email = $('#su-mail').value.trim();
+  if (!name || !email) return alert('Preencha nome e e-mail.');
+  db.user = { name, email, isAdmin: email.toLowerCase() === ADMIN_EMAIL.toLowerCase(), plan:'free', simFree:false, pending:false };
+  save(); closeModal(); showTab('home');
+}
+function closeModal(){ $('#modal').classList.add('hide'); $('#modal').innerHTML = ''; }
+
+/* ---------- Navegação ---------- */
+function tabs(){
+  const t = [['home','🏠','Início'],['tx','➕','Lançar'],['nota','🧾','Nota'],['rel','📄','Relatórios']];
+  if (db.user && db.user.isAdmin) t.push(['adm','⚙️','Admin']);
+  return t;
+}
+function renderNav(){
+  $('#nav').innerHTML = tabs().map(([id,ic,l]) =>
+    `<button class="${cur===id?'on':''}" onclick="showTab('${id}')">${ic}<br>${l}</button>`).join('');
+}
+function showTab(t){
+  cur = t;
+  document.querySelectorAll('.sec').forEach(s => s.classList.toggle('hide', s.id !== 's-'+t));
+  renderNav();
+  ({home:renderHome, tx:renderTx, nota:renderNota, rel:renderRel, adm:renderAdm})[t]();
+  window.scrollTo(0,0);
+}
+
+/* ---------- Início ---------- */
+function rowTx(t){
+  return `<div class="row"><div><div>${esc(t.desc)}</div>
+    <div class="muted">${dBR(t.date)} · ${esc(t.cat)}</div></div>
+    <b class="${t.type==='in'?'inc':'exp'}">${t.type==='in'?'+':'-'} ${fmt(t.amount)}</b></div>`;
+}
+function renderHome(){
+  const m = today().slice(0,7);
+  const inc = sum(db.tx.filter(t => t.type==='in'));
+  const out = sum(db.tx.filter(t => t.type==='out'));
+  const mon = db.tx.filter(t => t.type==='out' && t.date.startsWith(m));
+  const tot = sum(mon);
+  const byCat = {};
+  mon.forEach(t => byCat[t.cat] = (byCat[t.cat]||0) + t.amount);
+  const cats = Object.entries(byCat).sort((a,b) => b[1]-a[1]);
+  const recent = [...db.tx].sort((a,b) => b.date.localeCompare(a.date)).slice(0,5);
+  $('#s-home').innerHTML = `
+    <div class="card">
+      <div class="muted">Olá, ${esc(db.user.name.split(' ')[0])}</div>
+      <div class="muted">Saldo geral</div>
+      <h2 style="margin:4px 0">${fmt(inc-out)}</h2>
+      <div class="row"><span>Entradas</span><b class="inc">${fmt(inc)}</b></div>
+      <div class="row" style="border:0"><span>Saídas</span><b class="exp">${fmt(out)}</b></div>
+    </div>
+    <div class="card">
+      <b>Gastos do mês</b> <span class="muted">${fmt(tot)}</span>
+      ${cats.length ? cats.map(([c,v]) => `
+        <div class="row" style="border:0;padding:10px 0 4px"><span>${esc(c)}</span><span>${fmt(v)}</span></div>
+        <div class="bar"><i style="width:${(v/tot*100).toFixed(1)}%"></i></div>`).join('')
+        : '<p class="muted">Nenhum gasto neste mês ainda.</p>'}
+    </div>
+    <div class="card"><b>Últimos lançamentos</b>
+      ${recent.length ? recent.map(rowTx).join('') : '<p class="muted">Nada lançado ainda.</p>'}
+    </div>
+    ${isPro() ? '' : '<div class="ad">Espaço para anúncio (Google AdMob)</div>'}`;
+}
+
+/* ---------- Lançamentos ---------- */
+function renderTx(){
+  const p = pending || {}; pending = null;
+  $('#s-tx').innerHTML = `
+    <div class="card"><b>Novo lançamento</b>
+      <select id="t-type"><option value="out" ${p.type!=='in'?'selected':''}>Saída (gasto)</option>
+        <option value="in">Entrada (receita)</option></select>
+      <input id="t-desc" placeholder="Descrição" value="${esc(p.desc||'')}">
+      <input id="t-amt" inputmode="decimal" placeholder="Valor (ex: 42,90)" value="${esc(p.amount||'')}">
+      <select id="t-cat">${CATS.map(c => `<option>${c}</option>`).join('')}</select>
+      <input id="t-date" type="date" value="${today()}">
+      <button onclick="addTx()">Salvar</button>
+    </div>
+    <div class="card"><b>Histórico</b>
+      ${db.tx.length ? [...db.tx].sort((a,b) => b.date.localeCompare(a.date)).map(t =>
+          rowTx(t) + `<div style="text-align:right;margin:-6px 0 8px">
+          <button class="sec" style="width:auto;padding:4px 10px;font-size:12px" onclick="delTx('${t.id}')">Excluir</button></div>`).join('')
+        : '<p class="muted">Sem lançamentos.</p>'}
+    </div>`;
+}
+function addTx(){
+  const desc = $('#t-desc').value.trim();
+  const amount = parseMoney($('#t-amt').value);
+  if (!desc) return alert('Informe a descrição.');
+  if (isNaN(amount)) return alert('Informe um valor válido.');
+  db.tx.push({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+    type: $('#t-type').value, desc, amount,
+    cat: $('#t-cat').value, date: $('#t-date').value || today()
+  });
+  save(); showTab('home');
+}
+function delTx(id){
+  if (!confirm('Excluir este lançamento?')) return;
+  db.tx = db.tx.filter(t => t.id !== id); save(); renderTx();
+}
+
+/* ---------- Nota fiscal (OCR) ---------- */
+function renderNota(){
+  ensureDay();
+  const pro = isPro();
+  $('#s-nota').innerHTML = `
+    <div class="card"><b>Leitor de nota fiscal</b>
+      <p>${pro ? '<span class="pill">Premium: leituras ilimitadas</span>'
+        : `Leituras restantes hoje: <b>${Math.max(0, FREE_LIMIT - db.usage.reads)}</b> de ${FREE_LIMIT}`}</p>
+      <input id="nf-file" type="file" accept="image/*" capture="environment">
+      <button onclick="runOCR()">Ler nota</button>
+      <p class="muted">Dica: foto bem iluminada e reta, com o valor total visível.</p>
+    </div>
+    <div id="nf-out"></div>`;
+}
+function loadTesseract(){
+  return new Promise((res, rej) => {
+    if (window.Tesseract) return res();
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+    s.onload = () => res();
+    s.onerror = () => rej(new Error('Falha ao carregar o OCR. Verifique sua conexão.'));
+    document.head.appendChild(s);
+  });
+}
+function extractTotal(text){
+  const re = /(\d{1,3}(?:\.\d{3})*,\d{2}|\d+[.,]\d{2})/g;
+  let best = null;
+  for (const ln of text.split('\n')){
+    if (/total|valor\s*(pago|total)|a\s*pagar/i.test(ln)){
+      const m = [...ln.matchAll(re)];
+      if (m.length) best = m[m.length-1][1];
+    }
+  }
+  return best;
+}
+async function runOCR(){
+  ensureDay();
+  const f = $('#nf-file').files[0];
+  const out = $('#nf-out');
+  if (!f) return alert('Escolha ou tire uma foto da nota.');
+  if (!isPro() && db.usage.reads >= FREE_LIMIT) return openPaywall();
+  db.usage.reads++; save();
+  out.innerHTML = '<div class="card muted">Lendo a nota… a primeira leitura pode demorar.</div>';
+  try {
+    await loadTesseract();
+    const { data } = await Tesseract.recognize(f, 'por');
+    const raw = extractTotal(data.text);
+    const val = raw ? parseMoney(raw) : NaN;
+    out.innerHTML = `<div class="card"><b>Total encontrado:</b> ${isFinite(val) ? fmt(val) : 'não identificado'}
+      <p class="muted" style="white-space:pre-wrap;max-height:160px;overflow:auto">${esc(data.text.slice(0,600))}</p>
+      ${isFinite(val) ? `<button onclick="useOCR(${val})">Usar no lançamento</button>` : ''}
+      <p class="muted">Confira o valor antes de salvar.</p></div>`;
+  } catch(e){
+    db.usage.reads--; save();
+    out.innerHTML = `<div class="card">${esc(e.message || 'Erro ao ler a nota.')}</div>`;
+  }
+}
+function useOCR(v){
+  pending = { type:'out', amount: v.toFixed(2).replace('.',','), desc: 'Compra (nota fiscal)' };
+  showTab('tx');
+}
+
+/* ---------- Paywall ---------- */
+function openPaywall(){
+  $('#modal').innerHTML = `<div class="card">
+    <h3>Limite diário atingido</h3>
+    <p class="muted">Você usou as ${FREE_LIMIT} leituras grátis de hoje. Libere leituras ilimitadas, relatórios em PDF e backup, sem anúncios.</p>
+    <p><b>R$ 9,90/mês</b> ou <b>R$ 14,90</b> acesso único</p>
+    <p class="muted">Pague via PIX na chave: <b>${esc(PIX_KEY)}</b></p>
+    <button onclick="confirmPix()">Já paguei</button>
+    <button class="sec" onclick="closeModal()">Agora não</button></div>`;
+  $('#modal').classList.remove('hide');
+}
+function confirmPix(){
+  db.user.pending = true; save();
+  alert('Recebemos sua solicitação. A liberação acontece após a confirmação do pagamento.');
+  closeModal();
+}
+
+/* ---------- Relatórios e backup (Premium) ---------- */
+function renderRel(){
+  $('#s-rel').innerHTML = `
+    <div class="card"><b>Relatório mensal em PDF</b>
+      <p class="muted">Resumo do mês atual com todas as movimentações. Na tela de impressão, escolha "Salvar como PDF".</p>
+      ${isPro() ? '<span class="pill">Premium liberado</span>' : '<span class="muted">Recurso exclusivo do Premium.</span>'}
+      <button onclick="printReport()">Gerar PDF</button></div>
+    <div class="card"><b>Backup</b>
+      <p class="muted">Exporte seus dados para guardar com segurança e restaurar depois.</p>
+      <button onclick="exportBackup()">Exportar backup</button>
+      <label class="muted">Restaurar backup</label>
+      <input type="file" accept="application/json" onchange="importBackup(this)"></div>`;
+}
+function printReport(){
+  if (!isPro()) return openPaywall();
+  const m = today().slice(0,7);
+  const list = db.tx.filter(t => t.date.startsWith(m)).sort((a,b) => a.date.localeCompare(b.date));
+  const inc = sum(list.filter(t => t.type==='in'));
+  const out = sum(list.filter(t => t.type==='out'));
+  const rows = list.map(t => `<tr><td>${dBR(t.date)}</td><td>${esc(t.desc)}</td><td>${esc(t.cat)}</td>
+    <td>${t.type==='in'?'+':'-'} ${fmt(t.amount)}</td></tr>`).join('')
+    || '<tr><td colspan="4">Sem movimentações</td></tr>';
+  $('#print-area').innerHTML = `<h2>PoupeJá AI — Resumo de ${dBR(m+'-01').slice(3)}</h2>
+    <p>Entradas: ${fmt(inc)} | Saídas: ${fmt(out)} | Saldo: ${fmt(inc-out)}</p>
+    <table style="width:100%;border-collapse:collapse" border="1" cellpadding="6">
+    <tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Valor</th></tr>${rows}</table>`;
+  window.print();
+}
+function exportBackup(){
+  if (!isPro()) return openPaywall();
+  const blob = new Blob([JSON.stringify({app:'PoupeJa-AI', version:1, exportedAt:new Date().toISOString(), tx:db.tx}, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'poupeja-backup-' + today() + '.json';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function importBackup(input){
+  if (!isPro()) return openPaywall();
+  const f = input.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const d = JSON.parse(r.result);
+      if (!Array.isArray(d.tx)) throw new Error();
+      if (!confirm(`Restaurar ${d.tx.length} lançamentos? Isso substitui os dados atuais.`)) return;
+      db.tx = d.tx; save(); showTab('home');
+    } catch(e){ alert('Arquivo de backup inválido.'); }
+  };
+  r.readAsText(f);
+}
+
+/* ---------- Admin ---------- */
+function renderAdm(){
+  if (!db.user || !db.user.isAdmin) return showTab('home');
+  $('#s-adm').innerHTML = `
+    <div class="card"><b>Painel do administrador</b>
+      <p class="muted">${esc(db.user.name)} · ${esc(db.user.email)}</p>
+      <p>Lançamentos salvos: <b>${db.tx.length}</b><br>
+         Leituras de nota hoje: <b>${db.usage.reads}</b><br>
+         Plano neste aparelho: <b>${isPro() ? 'Premium/Admin' : 'Grátis'}</b>
+         ${db.user.pending ? '<br>Pagamento PIX pendente de confirmação' : ''}</p>
+      <button class="sec" onclick="toggleSim()">${db.user.simFree ? 'Voltar para acesso admin' : 'Testar como usuário grátis'}</button>
+      <button class="sec" onclick="resetReads()">Zerar leituras de hoje</button>
+      <button class="danger" onclick="wipe()">Apagar todos os dados deste aparelho</button>
+    </div>
+    <p class="muted">Ativação real de assinaturas e confirmação de PIX dependem de backend (Firebase), que é a próxima etapa.</p>`;
+}
+function toggleSim(){ db.user.simFree = !db.user.simFree; save(); renderAdm(); }
+function resetReads(){ db.usage.reads = 0; save(); renderAdm(); }
+function wipe(){
+  if (confirm('Apagar TODOS os dados deste aparelho?')){ localStorage.removeItem(KEY); location.reload(); }
+}
+
+/* ---------- Início do app ---------- */
+window.addEventListener('DOMContentLoaded', () => {
+  ensureDay();
+  if (db.user) showTab('home');
+  else showSetup();
+});
+</script>
+</body>
+</html>
